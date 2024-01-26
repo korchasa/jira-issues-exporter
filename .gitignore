@@ -1,5 +1,4 @@
 .idea
 .DS_Store
-README.md
 .env
 gin-bin

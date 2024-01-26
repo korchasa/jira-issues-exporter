@@ -13,7 +13,6 @@ import (
 )
 
 const (
-    defaultStatus  = "Initial"
     jiraTimeFormat = "2006-01-02T15:04:05.000-0700"
 )
 
@@ -147,7 +146,7 @@ type JiraIssue struct {
 
 // transformDataForPrometheus updates Prometheus metrics instead of returning a string
 func transformDataForPrometheus(issue JiraIssue) {
-    fmt.Printf("Processing issue %s\n", issue.Key)
+    //fmt.Printf("Processing issue %s\n", issue.Key)
     jiraIssuesCount.With(prometheus.Labels{
         "project":        issue.Fields.Project.Key,
         "priority":       issue.Fields.Priority.Name,
@@ -174,8 +173,8 @@ func calculateStatusDurations(issue JiraIssue) {
             }
         }
     }
-    for status, duration := range statusDurations {
-        fmt.Printf("Issue %s spent %s in status %s\n", issue.Key, duration, status)
+    for _, duration := range statusDurations {
+        //fmt.Printf("Issue %s spent %s in status %s\n", issue.Key, duration, status)
         jiraIssueTimeInStatus.With(prometheus.Labels{
             "project":   issue.Fields.Project.Key,
             "priority":  issue.Fields.Priority.Name,
@@ -216,6 +215,7 @@ func main() {
         for {
             jiraIssuesCount.Reset()
             jiraIssueTimeInStatus.Reset()
+            now := time.Now()
             issues, err := fetchJiraData(cfg)
             if err != nil {
                 fmt.Println("Error fetching Jira data:", err)
@@ -224,6 +224,7 @@ func main() {
             for _, issue := range issues {
                 transformDataForPrometheus(issue)
             }
+            fmt.Printf("Fetched %d issues in %s\n", len(issues), time.Since(now))
             time.Sleep(cfg.dataRefreshPeriod)
         }
     }()
