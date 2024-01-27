@@ -1,0 +1,25 @@
+{{- if .Values.serviceMonitor.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "jira-issue-exporter.fullname" . }}
+  labels:
+    release: kube-prometheus-stack
+    {{- include "jira-issue-exporter.labels" . | nindent 4 }}
+spec:
+  targetLabels: {{ range $key, $_ := .Values.serviceMonitor.targetLabels }}
+    - {{ $key }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "jira-issue-exporter.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: {{ .Values.serviceMonitor.path }}
+      interval: {{ .Values.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
+      honorLabels: {{ .Values.serviceMonitor.honorLabels }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+{{- end }}

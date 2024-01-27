@@ -1,0 +1,121 @@
+# Default values for jira-issue-exporter.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+application:
+  env:
+    - name: JIRA_URL
+      value: ""
+    - name: JIRA_USER
+      value: ""
+    - name: JIRA_API_TOKEN
+      value: ""
+    - name: PROJECTS
+      value: ""
+    - name: ANALYZE_PERIOD_DAYS
+      value: "90"
+    - name: DATA_REFRESH_PERIOD
+      value: "5m"
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/korchasa/jira-issues-exporter
+  pullPolicy: IfNotPresent
+  tag: latest
+
+## Prometheus Operator ServiceMonitor configuration
+##
+serviceMonitor:
+  enabled: false
+  ## @param metrics.serviceMonitor.namespace Namespace in which Prometheus is running
+  ##
+  namespace: ""
+  ## @param metrics.serviceMonitor.path Path on which metrics should be exposed
+  ##
+  path: "/metrics"
+  ## @param serviceMonitor.targetLabels Labels that get transferred from the Kubernetes service to the Prometheus target as additional labels
+  targetLabels: []
+  ## @param serviceMonitor.interval Interval at which metrics should be scraped.
+  ## ref: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#endpoint
+  ## e.g:
+  ## interval: 10s
+  ##
+  interval: "1m"
+  ## @param metrics.serviceMonitor.scrapeTimeout Timeout after which the scrape is ended
+  ## ref: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#endpoint
+  ## e.g:
+  ## scrapeTimeout: 10s
+  ##
+  scrapeTimeout: "59s"
+  ## @param metrics.serviceMonitor.selector Prometheus instance selector labels
+  ## ref: https://github.com/bitnami/charts/tree/main/bitnami/prometheus-operator#prometheus-configuration
+  ##
+  ## selector:
+  ##   prometheus: my-prometheus
+  ##
+  selector: {}
+  ## @param metrics.serviceMonitor.labels Additional labels that can be used so PodMonitor will be discovered by Prometheus
+  ##
+  labels: {}
+  ## @param metrics.serviceMonitor.honorLabels honorLabels chooses the metric's labels on collisions with target labels
+  ##
+  honorLabels: false
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Automatically mount a ServiceAccount's API credentials?
+  automount: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+  # fsGroup: 2000
+
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 9111
+
+resources: {}
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  # limits:
+  #   cpu: 100m
+  #   memory: 128Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+livenessProbe:
+  httpGet:
+    path: /liveness
+    port: http
+readinessProbe:
+  httpGet:
+    path: /readiness
+    port: http
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}

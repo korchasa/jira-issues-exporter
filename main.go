@@ -186,12 +186,33 @@ func calculateStatusDurations(issue JiraIssue) {
 
 // exposeMetrics serves the Prometheus metrics using promhttp
 func exposeMetrics(cfg config) {
+    http.Handle("/liveness", livenessHandler())
+    http.Handle("/readiness", readinessHandler(cfg))
     http.Handle("/metrics", promhttp.Handler())
     fmt.Printf("Serving metrics on %s\n", cfg.listen)
     err := http.ListenAndServe(cfg.listen, nil)
     if err != nil {
         fmt.Println("Error starting HTTP server:", err)
     }
+}
+
+func livenessHandler() http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.WriteHeader(http.StatusOK)
+    })
+}
+
+func readinessHandler(cfg config) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        _, err := fetchStartingFrom(cfg, 0)
+        if err != nil {
+            fmt.Printf("Error fetching Jira data: %s\n", err)
+            w.WriteHeader(http.StatusInternalServerError)
+            return
+        } else {
+            w.WriteHeader(http.StatusOK)
+        }
+    })
 }
 
 func main() {
@@ -213,8 +234,6 @@ func main() {
     // Repeat every cfg.dataRefreshPeriod and fetch Jira data
     go func() {
         for {
-            jiraIssuesCount.Reset()
-            jiraIssueTimeInStatus.Reset()
             now := time.Now()
             issues, err := fetchJiraData(cfg)
             if err != nil {

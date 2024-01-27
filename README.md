@@ -20,3 +20,26 @@ jira_issue_time_in_status_sum{assignee="bob@example.com",issueType="Sub-task",
 The exporter provides the following metrics:
 - `jira_issues_count` - the number of issues in a given status (labels: `project`, `issueType`, `status`, `statusCategory`, `priority`, `assignee`)
 - `jira_issue_time_in_status` - the time spent in a given status (labels: `project`, `issueType`, `priority`, `assignee`)
+
+## Configuration
+
+The exporter is configured via environment variables:
+
+| Variable              | Description                                      |
+|-----------------------|--------------------------------------------------|
+| `LISTEN`              | Address to listen                                |
+| `JIRA_URL`            | Jira URL                                         |
+| `JIRA_USER`           | Jira username                                    |
+| `JIRA_API_TOKEN`      | Jira API token                                   |
+| `JIRA_PROJECTS`       | Comma-separated list of Jira projects to monitor |
+| `ANALYZE_PERIOD_DAYS` | Number of days to analyze (default: `90`)        |
+| `DATA_REFRESH_PERIOD` | Data refresh period in seconds (default: `5m`)   |
+
+
+## Todo
+
+- do not reset the metrics on each scrape
+- add probes
+- add statuses to the jira_issue_time_in_status metric
+- strange issues without assignee
+- test on big projects
