@@ -17,8 +17,12 @@ import (
 )
 
 const (
-    jiraRequestTimeout = 30 * time.Second
-    jiraTimeFormat     = "2006-01-02T15:04:05.000-0700"
+    jiraRequestTimeout         = 30 * time.Second
+    jiraTimeFormat             = "2006-01-02T15:04:05.000-0700"
+    hourSecs           float64 = 60 * 60
+    daySecs            float64 = 24 * hourSecs
+    weekSecs           float64 = 7 * daySecs
+    monthSecs          float64 = 30.41 * daySecs
 )
 
 type config struct {
@@ -44,7 +48,7 @@ var (
         prometheus.HistogramOpts{
             Name:    "jira_issue_time_in_status",
             Help:    "Time spent by issues in each status.",
-            Buckets: prometheus.ExponentialBuckets(1, 10, 8),
+            Buckets: []float64{hourSecs, daySecs, 2 * daySecs, 4 * daySecs, weekSecs, 2 * weekSecs, monthSecs, 2 * monthSecs, 4 * monthSecs, 12 * monthSecs},
         },
         []string{"project", "priority", "assignee", "issueType", "status"},
     )
@@ -190,7 +194,7 @@ type MySelfInfo struct {
     Active       bool   `json:"active"`
 }
 
-func fetchMyself(ctx context.Context, cfg config, startAt int) (*MySelfInfo, error) {
+func fetchMyself(ctx context.Context, cfg config) (*MySelfInfo, error) {
     apiURL := fmt.Sprintf("%s/rest/api/3/myself", cfg.jiraURL)
     log.Debugf("Fetch Jira status: %s\n", apiURL)
     myself := new(MySelfInfo)
@@ -288,7 +292,8 @@ func livenessHandler() http.Handler {
 
 func readinessHandler(cfg config) http.Handler {
     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        _, err := fetchStartingFrom(cfg, 0)
+        log.Infof("readinessHandler")
+        _, err := fetchMyself(context.TODO(), cfg)
         if err != nil {
             fmt.Printf("Error fetching Jira data: %s\n", err)
             w.WriteHeader(http.StatusInternalServerError)
