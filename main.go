@@ -1,10 +1,14 @@
 package main
 
 import (
+    "context"
     "encoding/json"
     "fmt"
     "github.com/prometheus/client_golang/prometheus"
     "github.com/prometheus/client_golang/prometheus/promhttp"
+    "io"
+
+    log "github.com/sirupsen/logrus"
     "net/http"
     "net/url"
     "os"
@@ -13,7 +17,8 @@ import (
 )
 
 const (
-    jiraTimeFormat = "2006-01-02T15:04:05.000-0700"
+    jiraRequestTimeout = 30 * time.Second
+    jiraTimeFormat     = "2006-01-02T15:04:05.000-0700"
 )
 
 type config struct {
@@ -24,6 +29,90 @@ type config struct {
     jiraAPIToken      string
     projects          string
     analyzePeriodDays string
+}
+
+// Define Prometheus metrics
+var (
+    jiraIssueCount = prometheus.NewGaugeVec(
+        prometheus.GaugeOpts{
+            Name: "jira_issue_count",
+            Help: "Count of Jira issues by various labels.",
+        },
+        []string{"project", "priority", "status", "statusCategory", "assignee", "issueType"},
+    )
+    jiraIssueTimeInStatus = prometheus.NewHistogramVec(
+        prometheus.HistogramOpts{
+            Name:    "jira_issue_time_in_status",
+            Help:    "Time spent by issues in each status.",
+            Buckets: prometheus.ExponentialBuckets(1, 10, 8),
+        },
+        []string{"project", "priority", "assignee", "issueType", "status"},
+    )
+)
+
+func init() {
+    // Register metrics with Prometheus
+    prometheus.MustRegister(jiraIssueCount)
+    prometheus.MustRegister(jiraIssueTimeInStatus)
+}
+
+func main() {
+    log.SetOutput(os.Stderr)
+    log.SetReportCaller(false)
+    //log.SetLevel(log.InfoLevel)
+    log.SetLevel(log.DebugLevel)
+    log.SetFormatter(
+        &log.TextFormatter{
+            TimestampFormat: "15:04:05",
+            FullTimestamp:   true,
+            ForceColors:     true,
+        },
+    )
+
+    var err error
+    cfg := config{
+        listen:            getEnvOrDie("LISTEN"),
+        analyzePeriodDays: getEnvOrDefault("ANALYZE_PERIOD_DAYS", "90"),
+        jiraURL:           getEnvOrDie("JIRA_URL"),
+        jiraUser:          getEnvOrDie("JIRA_USER"),
+        jiraAPIToken:      getEnvOrDie("JIRA_API_TOKEN"),
+        projects:          getEnvOrDie("PROJECTS"),
+    }
+    cfg.dataRefreshPeriod, err = time.ParseDuration(getEnvOrDefault("DATA_REFRESH_PERIOD", "5m"))
+    failOnError(err)
+    if cfg.analyzePeriodDays == "" {
+        cfg.analyzePeriodDays = "90"
+    }
+
+    // Repeat every cfg.dataRefreshPeriod and fetch Jira data
+    go func() {
+        for {
+            now := time.Now()
+            issues, err := fetchJiraData(cfg)
+            if err != nil {
+                fmt.Println("Error fetching Jira data:", err)
+                return
+            }
+            log.Infof("Fetched %d issues in %s", len(issues), time.Since(now))
+            now = time.Now()
+            jiraIssueCount.Reset()
+            jiraIssueTimeInStatus.Reset()
+            for _, issue := range issues {
+                transformDataForPrometheus(issue)
+            }
+            log.Infof("Metrics updated in %s", time.Since(now))
+            time.Sleep(cfg.dataRefreshPeriod)
+        }
+    }()
+
+    http.Handle("/liveness", livenessHandler())
+    http.Handle("/readiness", readinessHandler(cfg))
+    http.Handle("/metrics", promhttp.Handler())
+
+    log.Infof("Serving metrics on %s\n", cfg.listen)
+    if err := http.ListenAndServe(cfg.listen, nil); err != nil {
+        fmt.Println("Error starting HTTP server:", err)
+    }
 }
 
 // fetchJiraData connects to the Jira API and fetches issues data
@@ -42,71 +131,6 @@ func fetchJiraData(cfg config) ([]JiraIssue, error) {
         startAt += len(issuesChunk)
     }
     return issues, nil
-}
-
-func fetchStartingFrom(cfg config, startAt int) ([]JiraIssue, error) {
-    fmt.Printf("Fetching Jira data starting from %d\n", startAt)
-    // Adjust the API URL based on your Jira setup
-    jql := fmt.Sprintf("updated >= -%sd AND project in (%s)", cfg.analyzePeriodDays, cfg.projects)
-    apiURL := fmt.Sprintf("%s/rest/api/3/search?expand=changelog&fields=created,status,assignee,project,issuetype&startAt=%d&jql=%s", cfg.jiraURL, startAt, url.QueryEscape(jql))
-    fmt.Printf("Fetching %s\n", apiURL)
-
-    // Create a new HTTP request
-    req, err := http.NewRequest("GET", apiURL, nil)
-    if err != nil {
-        return nil, err
-    }
-
-    // Set authentication headers
-    req.SetBasicAuth(cfg.jiraUser, cfg.jiraAPIToken)
-
-    // Make the HTTP request
-    client := &http.Client{}
-    resp, err := client.Do(req)
-    if err != nil {
-        return nil, err
-    }
-    defer resp.Body.Close()
-
-    // Check if the response is successful
-    if resp.StatusCode != http.StatusOK {
-        return nil, fmt.Errorf("failed to fetch data: %s", resp.Status)
-    }
-
-    // Decode the JSON response
-    var result struct {
-        Issues []JiraIssue `json:"issues"`
-    }
-    if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-        return nil, err
-    }
-
-    return result.Issues, nil
-}
-
-// Define Prometheus metrics
-var (
-    jiraIssueCount = prometheus.NewGaugeVec(
-        prometheus.GaugeOpts{
-            Name: "jira_issue_count",
-            Help: "Count of Jira issues by various labels.",
-        },
-        []string{"project", "priority", "status", "statusCategory", "assignee", "issueType"},
-    )
-    jiraIssueTimeInStatus = prometheus.NewHistogramVec(
-        prometheus.HistogramOpts{
-            Name:    "jira_issue_time_in_status",
-            Help:    "Time spent by issues in each status.",
-            Buckets: prometheus.ExponentialBuckets(1, 10, 8),
-        },
-        []string{"project", "priority", "assignee", "issueType"},
-    )
-)
-
-func init() {
-    // Register metrics with Prometheus
-    prometheus.MustRegister(jiraIssueCount)
-    prometheus.MustRegister(jiraIssueTimeInStatus)
 }
 
 // JiraIssue represents the structure of an issue from Jira
@@ -144,6 +168,70 @@ type JiraIssue struct {
     } `json:"fields"`
 }
 
+func fetchStartingFrom(cfg config, startAt int) ([]JiraIssue, error) {
+    log.Debugf("Fetching Jira data starting from %d", startAt)
+    // Adjust the API URL based on your Jira setup
+    jql := fmt.Sprintf("updated >= -%sd AND project in (%s)", cfg.analyzePeriodDays, cfg.projects)
+    apiURL := fmt.Sprintf("%s/rest/api/3/search?expand=changelog&fields=created,status,assignee,project,issuetype&startAt=%d&jql=%s", cfg.jiraURL, startAt, url.QueryEscape(jql))
+    log.Debugf("Fetching %s", apiURL)
+
+    // Decode the JSON response
+    var result struct {
+        Issues []JiraIssue `json:"issues"`
+    }
+    if err := request(context.TODO(), cfg, apiURL, &result); err != nil {
+        return result.Issues, fmt.Errorf("failed to fetch issues: %w", err)
+    }
+    return result.Issues, nil
+}
+
+type MySelfInfo struct {
+    EmailAddress string `json:"emailAddress"`
+    Active       bool   `json:"active"`
+}
+
+func fetchMyself(ctx context.Context, cfg config, startAt int) (*MySelfInfo, error) {
+    apiURL := fmt.Sprintf("%s/rest/api/3/myself", cfg.jiraURL)
+    log.Debugf("Fetch Jira status: %s\n", apiURL)
+    myself := new(MySelfInfo)
+    if err := request(ctx, cfg, apiURL, myself); err != nil {
+        return nil, fmt.Errorf("failed to fetch self info: %w", err)
+    }
+    return myself, nil
+}
+
+func request(ctx context.Context, cfg config, apiURL string, target interface{}) error {
+    ctx, cancel := context.WithTimeout(ctx, jiraRequestTimeout)
+    defer cancel()
+    // Create a new HTTP request
+    req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+    if err != nil {
+        return err
+    }
+
+    // Set authentication headers
+    req.SetBasicAuth(cfg.jiraUser, cfg.jiraAPIToken)
+
+    // Make the HTTP request
+    client := &http.Client{}
+    resp, err := client.Do(req)
+    if err != nil {
+        return err
+    }
+    defer func(Body io.ReadCloser) { _ = Body.Close() }(resp.Body)
+
+    // Check if the response is successful
+    if resp.StatusCode != http.StatusOK {
+        return fmt.Errorf("failed to fetch data: %s", resp.Status)
+    }
+
+    if err := json.NewDecoder(resp.Body).Decode(&target); err != nil {
+        return err
+    }
+
+    return nil
+}
+
 // transformDataForPrometheus updates Prometheus metrics instead of returning a string
 func transformDataForPrometheus(issue JiraIssue) {
     //fmt.Printf("Processing issue %s\n", issue.Key)
@@ -159,7 +247,11 @@ func transformDataForPrometheus(issue JiraIssue) {
 }
 
 func calculateStatusDurations(issue JiraIssue) {
-    statusDurations := make(map[string]time.Duration)
+    type labelsInfo struct {
+        status         string
+        statusCategory string
+    }
+    statusDurations := make(map[labelsInfo]time.Duration)
 
     slices.Reverse(issue.Changelog.Histories)
     statusChangeTime := mustTimeParse(issue.Fields.Created)
@@ -168,31 +260,23 @@ func calculateStatusDurations(issue JiraIssue) {
         for _, item := range history.Items {
             if item.Field == "status" {
                 duration := changeTime.Sub(statusChangeTime)
-                statusDurations[item.FromString.(string)] += duration
+                labels := labelsInfo{
+                    status: item.FromString.(string),
+                }
+                statusDurations[labels] += duration
                 statusChangeTime = changeTime
             }
         }
     }
-    for _, duration := range statusDurations {
+    for labels, duration := range statusDurations {
         //fmt.Printf("Issue %s spent %s in status %s\n", issue.Key, duration, status)
         jiraIssueTimeInStatus.With(prometheus.Labels{
             "project":   issue.Fields.Project.Key,
             "priority":  issue.Fields.Priority.Name,
             "assignee":  issue.Fields.Assignee.EmailAddress,
             "issueType": issue.Fields.IssueType.Name,
+            "status":    labels.status,
         }).Observe(duration.Seconds())
-    }
-}
-
-// exposeMetrics serves the Prometheus metrics using promhttp
-func exposeMetrics(cfg config) {
-    http.Handle("/liveness", livenessHandler())
-    http.Handle("/readiness", readinessHandler(cfg))
-    http.Handle("/metrics", promhttp.Handler())
-    fmt.Printf("Serving metrics on %s\n", cfg.listen)
-    err := http.ListenAndServe(cfg.listen, nil)
-    if err != nil {
-        fmt.Println("Error starting HTTP server:", err)
     }
 }
 
@@ -215,48 +299,10 @@ func readinessHandler(cfg config) http.Handler {
     })
 }
 
-func main() {
-    var err error
-    cfg := config{
-        listen:            getEnvOrDie("LISTEN"),
-        analyzePeriodDays: getEnvOrDefault("ANALYZE_PERIOD_DAYS", "90"),
-        jiraURL:           getEnvOrDie("JIRA_URL"),
-        jiraUser:          getEnvOrDie("JIRA_USER"),
-        jiraAPIToken:      getEnvOrDie("JIRA_API_TOKEN"),
-        projects:          getEnvOrDie("PROJECTS"),
-    }
-    cfg.dataRefreshPeriod, err = time.ParseDuration(getEnvOrDefault("DATA_REFRESH_PERIOD", "5m"))
-    failOnError(err)
-    if cfg.analyzePeriodDays == "" {
-        cfg.analyzePeriodDays = "90"
-    }
-
-    // Repeat every cfg.dataRefreshPeriod and fetch Jira data
-    go func() {
-        for {
-            jiraIssueCount.Reset()
-            jiraIssueTimeInStatus.Reset()
-            now := time.Now()
-            issues, err := fetchJiraData(cfg)
-            if err != nil {
-                fmt.Println("Error fetching Jira data:", err)
-                return
-            }
-            for _, issue := range issues {
-                transformDataForPrometheus(issue)
-            }
-            fmt.Printf("Fetched %d issues in %s\n", len(issues), time.Since(now))
-            time.Sleep(cfg.dataRefreshPeriod)
-        }
-    }()
-
-    exposeMetrics(cfg)
-}
-
 func getEnvOrDie(name string) string {
     value := os.Getenv(name)
     if value == "" {
-        panic(fmt.Sprintf("%s env is empty", name))
+        log.Fatalf("%s env is empty", name)
     }
     return value
 }
@@ -271,15 +317,14 @@ func getEnvOrDefault(name string, defaultValue string) string {
 
 func failOnError(err error) {
     if err != nil {
-        fmt.Printf("Error: %s", err)
-        os.Exit(1)
+        log.Fatalf("Error: %s", err)
     }
 }
 
 func mustTimeParse(str string) time.Time {
     t, err := time.Parse(jiraTimeFormat, str)
     if err != nil {
-        panic(err)
+        log.Fatal(err)
     }
     return t
 }
