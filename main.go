@@ -16,12 +16,8 @@ import (
 )
 
 const (
-    jiraRequestTimeout         = 30 * time.Second
-    jiraTimeFormat             = "2006-01-02T15:04:05.000-0700"
-    dayHours           float64 = 24
-    weekHours          float64 = 7 * dayHours
-    monthHours         float64 = 30.41 * dayHours
-    yearHours          float64 = 12 * monthHours
+    jiraRequestTimeout = 30 * time.Second
+    jiraTimeFormat     = "2006-01-02T15:04:05.000-0700"
 )
 
 type config struct {
@@ -45,21 +41,19 @@ var (
         },
         []string{"project", "priority", "status", "statusCategory", "assignee", "issueType"},
     )
-    jiraIssueTimeInStatus = prometheus.NewHistogramVec(
-        prometheus.HistogramOpts{
-            Name:    "jira_issue_time_in_status_hours",
-            Help:    "Time spent by issues in each status.",
-            Buckets: []float64{1, dayHours, 2 * dayHours, 4 * dayHours, weekHours, 2 * weekHours, monthHours, 2 * monthHours, 4 * monthHours, yearHours, 2 * yearHours},
+    jiraIssueHoursInStatusCount = prometheus.NewGaugeVec(
+        prometheus.GaugeOpts{
+            Name: "jira_issue_hours_in_status_count",
+            Help: "Time spent by issues in each status.",
         },
-        []string{"project", "priority", "assignee", "issueType", "statusCategory"},
+        []string{"project", "priority", "status", "statusCategory", "assignee", "issueType"},
     )
-    statusToCategory statusMap = statusMap{}
 )
 
 func init() {
     // Register metrics with Prometheus
     prometheus.MustRegister(jiraIssueCount)
-    prometheus.MustRegister(jiraIssueTimeInStatus)
+    prometheus.MustRegister(jiraIssueHoursInStatusCount)
 }
 
 func main() {
@@ -90,38 +84,48 @@ func main() {
         cfg.analyzePeriodDays = "90"
     }
 
-    if err := buildStatusMap(cfg, statusToCategory); err != nil {
-        log.Fatalf("failed to build status map: %s", err)
-    }
-
-    go func() {
-        for {
-            now := time.Now()
-            issues, err := fetchJiraData(cfg)
-            if err != nil {
-                fmt.Println("Error fetching Jira data:", err)
-                return
-            }
-            log.Infof("Fetched %d issues in %s", len(issues), time.Since(now))
-            now = time.Now()
-            jiraIssueCount.Reset()
-            jiraIssueTimeInStatus.Reset()
-            for _, issue := range issues {
-                transformDataForPrometheus(issue)
-            }
-            log.Infof("Metrics updated in %s", time.Since(now))
-            time.Sleep(cfg.dataRefreshPeriod)
-        }
-    }()
-
     http.Handle("/liveness", livenessHandler())
     http.Handle("/readiness", readinessHandler(cfg))
-    http.Handle("/metrics", promhttp.Handler())
+    http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+        if err := updateMetrics(cfg); err != nil {
+            log.Fatalf("failed to update metrics: %s", err)
+        }
+        h := promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{})
+        h.ServeHTTP(w, r)
+    })
 
     log.Infof("Serving metrics on %s\n", cfg.listen)
     if err := http.ListenAndServe(cfg.listen, nil); err != nil {
         fmt.Println("Error starting HTTP server:", err)
     }
+}
+
+func updateMetrics(cfg config) error {
+    now := time.Now()
+    statusToCategory := make(statusMap)
+    if err := buildStatusMap(cfg, statusToCategory); err != nil {
+        return fmt.Errorf("failed to build status map: %w", err)
+    }
+    log.Infof("Status map built in %s", time.Since(now))
+
+    now = time.Now()
+    issues, err := fetchJiraData(cfg)
+    if err != nil {
+        return fmt.Errorf("failed to fetch Jira data: %w", err)
+    }
+    log.Infof("Fetched %d issues in %s", len(issues), time.Since(now))
+
+    now = time.Now()
+    jiraIssueCount.Reset()
+    jiraIssueHoursInStatusCount.Reset()
+    for _, issue := range issues {
+        if err := transformDataForPrometheus(statusToCategory, issue); err != nil {
+            return fmt.Errorf("failed to transform data for Prometheus: %w", err)
+        }
+    }
+    log.Infof("Metrics updated in %s", time.Since(now))
+
+    return nil
 }
 
 func buildStatusMap(cfg config, sm statusMap) error {
@@ -217,19 +221,14 @@ func fetchStartingFrom(cfg config, startAt int) ([]JiraIssue, error) {
     return result.Issues, nil
 }
 
-type MySelfInfo struct {
-    EmailAddress string `json:"emailAddress"`
-    Active       bool   `json:"active"`
-}
-
-func fetchMyself(ctx context.Context, cfg config) (*MySelfInfo, error) {
+func testMyselfEndpoint(ctx context.Context, cfg config) error {
     apiURL := fmt.Sprintf("%s/rest/api/3/myself", cfg.jiraURL)
     log.Debugf("Fetch Jira status: %s\n", apiURL)
-    myself := new(MySelfInfo)
-    if err := request(ctx, cfg, apiURL, myself); err != nil {
-        return nil, fmt.Errorf("failed to fetch self info: %w", err)
+    resp := new(interface{})
+    if err := request(ctx, cfg, apiURL, resp); err != nil {
+        return fmt.Errorf("failed to fetch self info: %w", err)
     }
-    return myself, nil
+    return nil
 }
 
 func request(ctx context.Context, cfg config, apiURL string, target interface{}) error {
@@ -268,7 +267,7 @@ func request(ctx context.Context, cfg config, apiURL string, target interface{})
 }
 
 // transformDataForPrometheus updates Prometheus metrics instead of returning a string
-func transformDataForPrometheus(issue JiraIssue) {
+func transformDataForPrometheus(statusToCategory statusMap, issue JiraIssue) error {
     //fmt.Printf("Processing issue %s\n", issue.Key)
     jiraIssueCount.With(prometheus.Labels{
         "project":        issue.Fields.Project.Key,
@@ -278,10 +277,7 @@ func transformDataForPrometheus(issue JiraIssue) {
         "assignee":       issue.Fields.Assignee.EmailAddress,
         "issueType":      issue.Fields.IssueType.Name,
     }).Inc()
-    type labelsInfo struct {
-        statusCategory string
-    }
-    statusDurations := make(map[labelsInfo]time.Duration)
+    statusDurations := make(map[string]time.Duration)
     slices.Reverse(issue.Changelog.Histories)
     statusChangeTime := mustTimeParse(issue.Fields.Created)
     for _, history := range issue.Changelog.Histories {
@@ -289,26 +285,26 @@ func transformDataForPrometheus(issue JiraIssue) {
         for _, item := range history.Items {
             if item.Field == "status" {
                 duration := changeTime.Sub(statusChangeTime)
-                status := item.FromString.(string)
-                cat, exists := statusToCategory[status]
-                if !exists {
-                    log.Warnf("status `%s` not found in status map", status)
-                    continue
-                }
-                statusDurations[labelsInfo{statusCategory: cat}] += duration
+                statusDurations[item.FromString.(string)] += duration
                 statusChangeTime = changeTime
             }
         }
     }
-    for labels, duration := range statusDurations {
-        jiraIssueTimeInStatus.With(prometheus.Labels{
+    for status, duration := range statusDurations {
+        cat, exists := statusToCategory[status]
+        if !exists {
+            return fmt.Errorf("status `%s` not found in status map", status)
+        }
+        jiraIssueHoursInStatusCount.With(prometheus.Labels{
             "project":        issue.Fields.Project.Key,
             "priority":       issue.Fields.Priority.Name,
             "assignee":       issue.Fields.Assignee.EmailAddress,
             "issueType":      issue.Fields.IssueType.Name,
-            "statusCategory": labels.statusCategory,
-        }).Observe(duration.Hours())
+            "status":         status,
+            "statusCategory": cat,
+        }).Add(duration.Hours())
     }
+    return nil
 }
 
 func livenessHandler() http.Handler {
@@ -320,8 +316,7 @@ func livenessHandler() http.Handler {
 func readinessHandler(cfg config) http.Handler {
     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         log.Infof("readinessHandler")
-        _, err := fetchMyself(context.TODO(), cfg)
-        if err != nil {
+        if err := testMyselfEndpoint(context.TODO(), cfg); err != nil {
             fmt.Printf("Error fetching Jira data: %s\n", err)
             w.WriteHeader(http.StatusInternalServerError)
             return
