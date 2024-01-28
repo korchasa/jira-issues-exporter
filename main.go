@@ -16,8 +16,10 @@ import (
 )
 
 const (
-    jiraRequestTimeout = 30 * time.Second
-    jiraTimeFormat     = "2006-01-02T15:04:05.000-0700"
+    jiraRequestTimeout      = 30 * time.Second
+    jiraTimeFormat          = "2006-01-02T15:04:05.000-0700"
+    notExistsStatusCategory = "Not Exists"
+    issuePerPage            = 1000
 )
 
 type config struct {
@@ -208,7 +210,7 @@ func fetchStartingFrom(cfg config, startAt int) ([]JiraIssue, error) {
     log.Debugf("Fetching Jira data starting from %d", startAt)
     // Adjust the API URL based on your Jira setup
     jql := fmt.Sprintf("updated >= -%sd AND project in (%s)", cfg.analyzePeriodDays, cfg.projects)
-    apiURL := fmt.Sprintf("%s/rest/api/3/search?expand=changelog&fields=created,status,assignee,project,issuetype&startAt=%d&jql=%s", cfg.jiraURL, startAt, url.QueryEscape(jql))
+    apiURL := fmt.Sprintf("%s/rest/api/3/search?expand=changelog&fields=created,status,assignee,project,issuetype&maxResults=%d&startAt=%d&jql=%s", cfg.jiraURL, issuePerPage, startAt, url.QueryEscape(jql))
     log.Debugf("Fetching %s", apiURL)
 
     // Decode the JSON response
@@ -293,7 +295,7 @@ func transformDataForPrometheus(statusToCategory statusMap, issue JiraIssue) err
     for status, duration := range statusDurations {
         cat, exists := statusToCategory[status]
         if !exists {
-            return fmt.Errorf("status `%s` not found in status map", status)
+            cat = notExistsStatusCategory
         }
         jiraIssueHoursInStatusCount.With(prometheus.Labels{
             "project":        issue.Fields.Project.Key,
