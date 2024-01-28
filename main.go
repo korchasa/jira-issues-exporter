@@ -19,10 +19,10 @@ import (
 const (
     jiraRequestTimeout         = 30 * time.Second
     jiraTimeFormat             = "2006-01-02T15:04:05.000-0700"
-    hourSecs           float64 = 60 * 60
-    daySecs            float64 = 24 * hourSecs
-    weekSecs           float64 = 7 * daySecs
-    monthSecs          float64 = 30.41 * daySecs
+    dayHours           float64 = 24
+    weekHours          float64 = 7 * dayHours
+    monthHours         float64 = 30.41 * dayHours
+    yearHours          float64 = 12 * monthHours
 )
 
 type config struct {
@@ -46,9 +46,9 @@ var (
     )
     jiraIssueTimeInStatus = prometheus.NewHistogramVec(
         prometheus.HistogramOpts{
-            Name:    "jira_issue_time_in_status",
+            Name:    "jira_issue_time_in_status_hours",
             Help:    "Time spent by issues in each status.",
-            Buckets: []float64{hourSecs, daySecs, 2 * daySecs, 4 * daySecs, weekSecs, 2 * weekSecs, monthSecs, 2 * monthSecs, 4 * monthSecs, 12 * monthSecs},
+            Buckets: []float64{1, dayHours, 2 * dayHours, 4 * dayHours, weekHours, 2 * weekHours, monthHours, 2 * monthHours, 4 * monthHours, yearHours, 2 * yearHours},
         },
         []string{"project", "priority", "assignee", "issueType", "status"},
     )
@@ -280,7 +280,7 @@ func calculateStatusDurations(issue JiraIssue) {
             "assignee":  issue.Fields.Assignee.EmailAddress,
             "issueType": issue.Fields.IssueType.Name,
             "status":    labels.status,
-        }).Observe(duration.Seconds())
+        }).Observe(duration.Hours())
     }
 }
 
