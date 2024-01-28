@@ -6,9 +6,8 @@ import (
     "fmt"
     "github.com/prometheus/client_golang/prometheus"
     "github.com/prometheus/client_golang/prometheus/promhttp"
-    "io"
-
     log "github.com/sirupsen/logrus"
+    "io"
     "net/http"
     "net/url"
     "os"
@@ -35,6 +34,8 @@ type config struct {
     analyzePeriodDays string
 }
 
+type statusMap map[string]string
+
 // Define Prometheus metrics
 var (
     jiraIssueCount = prometheus.NewGaugeVec(
@@ -50,8 +51,9 @@ var (
             Help:    "Time spent by issues in each status.",
             Buckets: []float64{1, dayHours, 2 * dayHours, 4 * dayHours, weekHours, 2 * weekHours, monthHours, 2 * monthHours, 4 * monthHours, yearHours, 2 * yearHours},
         },
-        []string{"project", "priority", "assignee", "issueType", "status"},
+        []string{"project", "priority", "assignee", "issueType", "statusCategory"},
     )
+    statusToCategory statusMap = statusMap{}
 )
 
 func init() {
@@ -88,7 +90,10 @@ func main() {
         cfg.analyzePeriodDays = "90"
     }
 
-    // Repeat every cfg.dataRefreshPeriod and fetch Jira data
+    if err := buildStatusMap(cfg, statusToCategory); err != nil {
+        log.Fatalf("failed to build status map: %s", err)
+    }
+
     go func() {
         for {
             now := time.Now()
@@ -117,6 +122,29 @@ func main() {
     if err := http.ListenAndServe(cfg.listen, nil); err != nil {
         fmt.Println("Error starting HTTP server:", err)
     }
+}
+
+func buildStatusMap(cfg config, sm statusMap) error {
+    log.Infof("Fetching statuses from Jira")
+    type respStruct struct {
+        Name           string `json:"name"`
+        ID             string `json:"id"`
+        StatusCategory struct {
+            ID   int    `json:"id"`
+            Name string `json:"name"`
+        } `json:"statusCategory"`
+    }
+    apiURL := fmt.Sprintf("%s/rest/api/3/status", cfg.jiraURL)
+    log.Debugf("Fetch Jira statuses: %s\n", apiURL)
+    statuses := make([]respStruct, 0)
+    if err := request(context.TODO(), cfg, apiURL, &statuses); err != nil {
+        return fmt.Errorf("failed to fetch statuses: %w", err)
+    }
+    log.Infof("Fetched %d statuses", len(statuses))
+    for _, status := range statuses {
+        sm[status.Name] = status.StatusCategory.Name
+    }
+    return nil
 }
 
 // fetchJiraData connects to the Jira API and fetches issues data
@@ -229,6 +257,9 @@ func request(ctx context.Context, cfg config, apiURL string, target interface{})
         return fmt.Errorf("failed to fetch data: %s", resp.Status)
     }
 
+    //body, _ := io.ReadAll(resp.Body)
+    //log.Debugf("Response: %s\n", string(body))
+
     if err := json.NewDecoder(resp.Body).Decode(&target); err != nil {
         return err
     }
@@ -247,16 +278,10 @@ func transformDataForPrometheus(issue JiraIssue) {
         "assignee":       issue.Fields.Assignee.EmailAddress,
         "issueType":      issue.Fields.IssueType.Name,
     }).Inc()
-    calculateStatusDurations(issue)
-}
-
-func calculateStatusDurations(issue JiraIssue) {
     type labelsInfo struct {
-        status         string
         statusCategory string
     }
     statusDurations := make(map[labelsInfo]time.Duration)
-
     slices.Reverse(issue.Changelog.Histories)
     statusChangeTime := mustTimeParse(issue.Fields.Created)
     for _, history := range issue.Changelog.Histories {
@@ -264,22 +289,24 @@ func calculateStatusDurations(issue JiraIssue) {
         for _, item := range history.Items {
             if item.Field == "status" {
                 duration := changeTime.Sub(statusChangeTime)
-                labels := labelsInfo{
-                    status: item.FromString.(string),
+                status := item.FromString.(string)
+                cat, exists := statusToCategory[status]
+                if !exists {
+                    log.Warnf("status `%s` not found in status map", status)
+                    continue
                 }
-                statusDurations[labels] += duration
+                statusDurations[labelsInfo{statusCategory: cat}] += duration
                 statusChangeTime = changeTime
             }
         }
     }
     for labels, duration := range statusDurations {
-        //fmt.Printf("Issue %s spent %s in status %s\n", issue.Key, duration, status)
         jiraIssueTimeInStatus.With(prometheus.Labels{
-            "project":   issue.Fields.Project.Key,
-            "priority":  issue.Fields.Priority.Name,
-            "assignee":  issue.Fields.Assignee.EmailAddress,
-            "issueType": issue.Fields.IssueType.Name,
-            "status":    labels.status,
+            "project":        issue.Fields.Project.Key,
+            "priority":       issue.Fields.Priority.Name,
+            "assignee":       issue.Fields.Assignee.EmailAddress,
+            "issueType":      issue.Fields.IssueType.Name,
+            "statusCategory": labels.statusCategory,
         }).Observe(duration.Hours())
     }
 }
