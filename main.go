@@ -16,10 +16,14 @@ import (
 )
 
 const (
-    jiraRequestTimeout      = 30 * time.Second
-    jiraTimeFormat          = "2006-01-02T15:04:05.000-0700"
-    notExistsStatusCategory = "Not Exists"
-    issuePerPage            = 1000
+    jiraRequestTimeout              = 30 * time.Second
+    jiraTimeFormat                  = "2006-01-02T15:04:05.000-0700"
+    notExistsStatusCategory         = "Not Exists"
+    issuePerPage                    = 1000
+    dayHours                float64 = 24
+    weekHours               float64 = 7 * dayHours
+    monthHours              float64 = 30.41 * dayHours
+    yearHours                       = 365 * dayHours
 )
 
 type config struct {
@@ -43,10 +47,11 @@ var (
         },
         []string{"project", "priority", "status", "statusCategory", "assignee", "issueType"},
     )
-    jiraIssueHoursInStatusCount = prometheus.NewGaugeVec(
-        prometheus.GaugeOpts{
-            Name: "jira_issue_hours_in_status_count",
-            Help: "Time spent by issues in each status.",
+    jiraIssueHoursInStatus = prometheus.NewHistogramVec(
+        prometheus.HistogramOpts{
+            Name:    "jira_issue_hours_in_status",
+            Help:    "Time spent by issues in each status.",
+            Buckets: []float64{1, dayHours, 2 * dayHours, 4 * dayHours, weekHours, 2 * weekHours, monthHours, 2 * monthHours, 4 * monthHours, yearHours, 2 * yearHours},
         },
         []string{"project", "priority", "status", "statusCategory", "assignee", "issueType"},
     )
@@ -55,7 +60,7 @@ var (
 func init() {
     // Register metrics with Prometheus
     prometheus.MustRegister(jiraIssueCount)
-    prometheus.MustRegister(jiraIssueHoursInStatusCount)
+    prometheus.MustRegister(jiraIssueHoursInStatus)
 }
 
 func main() {
@@ -119,7 +124,7 @@ func updateMetrics(cfg config) error {
 
     now = time.Now()
     jiraIssueCount.Reset()
-    jiraIssueHoursInStatusCount.Reset()
+    jiraIssueHoursInStatus.Reset()
     for _, issue := range issues {
         if err := transformDataForPrometheus(statusToCategory, issue); err != nil {
             return fmt.Errorf("failed to transform data for Prometheus: %w", err)
@@ -297,14 +302,14 @@ func transformDataForPrometheus(statusToCategory statusMap, issue JiraIssue) err
         if !exists {
             cat = notExistsStatusCategory
         }
-        jiraIssueHoursInStatusCount.With(prometheus.Labels{
+        jiraIssueHoursInStatus.With(prometheus.Labels{
             "project":        issue.Fields.Project.Key,
             "priority":       issue.Fields.Priority.Name,
             "assignee":       issue.Fields.Assignee.EmailAddress,
             "issueType":      issue.Fields.IssueType.Name,
             "status":         status,
             "statusCategory": cat,
-        }).Add(duration.Hours())
+        }).Observe(duration.Hours())
     }
     return nil
 }
