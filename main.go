@@ -53,7 +53,7 @@ var (
             Help:    "Time spent by issues in each status.",
             Buckets: []float64{1, dayHours, 2 * dayHours, 4 * dayHours, weekHours, 2 * weekHours, monthHours, 2 * monthHours, 4 * monthHours, yearHours, 2 * yearHours},
         },
-        []string{"project", "priority", "status", "statusCategory", "assignee", "issueType"},
+        []string{"project", "priority", "status", "statusCategory", "issueType"},
     )
 )
 
@@ -306,7 +306,6 @@ func transformDataForPrometheus(statusToCategory statusMap, issue JiraIssue) err
         jiraIssueHoursInStatus.With(prometheus.Labels{
             "project":        issue.Fields.Project.Key,
             "priority":       issue.Fields.Priority.Name,
-            "assignee":       issue.Fields.Assignee.EmailAddress,
             "issueType":      issue.Fields.IssueType.Name,
             "status":         status,
             "statusCategory": cat,
