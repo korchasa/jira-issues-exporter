@@ -38,8 +38,6 @@ The exporter is configured via environment variables:
 
 ## Todo
 
-- do not reset the metrics on each scrape
-- add probes
-- add statuses to the jira_issue_time_in_status metric
 - strange issues without assignee
+- hidden blocked issues. Unlimited frame? 
 - test on big projects

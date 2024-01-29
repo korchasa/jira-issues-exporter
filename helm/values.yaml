@@ -40,13 +40,13 @@ serviceMonitor:
   ## e.g:
   ## interval: 10s
   ##
-  interval: "1m"
+  interval: "1h"
   ## @param metrics.serviceMonitor.scrapeTimeout Timeout after which the scrape is ended
   ## ref: https://github.com/coreos/prometheus-operator/blob/master/Documentation/api.md#endpoint
   ## e.g:
   ## scrapeTimeout: 10s
   ##
-  scrapeTimeout: "59s"
+  scrapeTimeout: "5m"
   ## @param metrics.serviceMonitor.selector Prometheus instance selector labels
   ## ref: https://github.com/bitnami/charts/tree/main/bitnami/prometheus-operator#prometheus-configuration
   ##
@@ -106,10 +106,12 @@ resources: {}
   #   memory: 128Mi
 
 livenessProbe:
+  periodSeconds: 30
   httpGet:
     path: /liveness
     port: metrics
 readinessProbe:
+  periodSeconds: 30
   httpGet:
     path: /readiness
     port: metrics
