@@ -94,9 +94,11 @@ func main() {
     http.Handle("/liveness", livenessHandler())
     http.Handle("/readiness", readinessHandler(cfg))
     http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+        now := time.Now()
         if err := updateMetrics(cfg); err != nil {
             log.Fatalf("failed to update metrics: %s", err)
         }
+        log.Infof("Metrics updated in %s", time.Since(now))
         h := promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{})
         h.ServeHTTP(w, r)
     })
@@ -130,8 +132,7 @@ func updateMetrics(cfg config) error {
             return fmt.Errorf("failed to transform data for Prometheus: %w", err)
         }
     }
-    log.Infof("Metrics updated in %s", time.Since(now))
-
+    log.Infof("Transformed %d issues in %s", len(issues), time.Since(now))
     return nil
 }
 
